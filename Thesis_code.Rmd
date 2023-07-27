@@ -1,0 +1,231 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+
+```
+```{r}
+library(BCDAG)
+library(igraph)
+library("GENIE3")
+```
+```{r}
+repeatInteration <- function(nTimes) {
+  iterationResult = matrix(0, nrow=2, ncol=nTimes)
+  for (iterationCount in 1:nTimes){
+# Get the current time
+current_time <- Sys.time()
+
+# Convert the POSIXct object to seconds since the epoch
+current_time_seconds <- as.numeric(current_time)
+set.seed(current_time_seconds)
+q <- 30
+w <- 0.1
+DAG1 <- rDAG(q,w)
+#DAG1
+#write.table(DAG1,file="DAG1_export")
+true_g=graph_from_adjacency_matrix(DAG1, mode="directed", weighted = NULL,
+  diag = FALSE,
+  add.colnames = NULL,
+  add.rownames = NA
+)
+
+#plot(true_g, edge.arrow.size=.4)
+#gsize(true_g)
+
+a <- q
+U <- diag(1,q)
+outDL <- rDAGWishart(n=1, DAG1, a, U)
+L <- outDL$L; D <- outDL$D
+
+Omega <- L %*% solve(D) %*% t(L)
+# Covariance matrix
+Sigma <- solve(Omega)
+n <- 100
+X <- mvtnorm::rmvnorm(n = n, sigma = Sigma)
+
+#try to apply methods on this new data
+#GENIE3
+exprMatrix=t(X)
+
+rownames(exprMatrix) <- paste( 1:30)
+weightMatrix<-GENIE3(
+exprMatrix,
+regulators = NULL,
+targets = NULL,
+treeMethod = "RF",
+K = "sqrt",
+nTrees = 1000,
+nCores = 1,
+returnMatrix = TRUE,
+verbose = FALSE
+)
+linkList <- getLinkList(weightMatrix)
+
+selected=linkList[1:30,1:2]
+genie_d <- graph_from_data_frame(d=selected, directed=T) 
+#png('/Users/madinabekbergenova/Downloads/caPC/network_genie.png')
+#plot(genie_d, edge.arrow.size=.4)
+#dev.off()
+# creating adjcency matrix for genie3
+m3<-as_adjacency_matrix(genie_d)
+m4<-m3[order(rownames(m3)),order(colnames(m3))]
+
+m5<-m4[order(as.numeric(rownames(m4))),order(as.numeric(colnames(m4)))]
+
+
+
+# Create a 30x30 matrix filled with 0
+genie_matrix <- matrix(0, nrow = 30, ncol = 30)
+
+
+m5_df <- with(
+  summary(t(m5)),
+  data.frame(rows = row.names(m5)[j], cols = colnames(m5)[i])
+)
+
+
+for (i in 1:nrow(m5_df)){
+  row <- as.numeric(m5_df$rows[i])
+  col <- as.numeric(m5_df$cols[i])
+    genie_matrix[row, col] <- 1
+  
+}
+
+
+#MRPC
+df <- data.frame(X)
+column_names<- paste("G", seq(1, 30), sep = "_")
+for (i in 1:30){
+  colnames(df)[i]<-column_names[i]
+}
+library(MRPC)
+n <- nrow (df) # Number of rows
+V <- colnames(df) # Column names
+suffStat_data<- list(C = cor(df, use = 'pairwise.complete.obs'), n = n)
+# Infer the graph by MRPC
+dag_mrpc=MRPC(df,suffStat =suffStat_data, GV = 1,
+              FDR = 0.05,
+              indepTest = 'gaussCItest',
+              labels = V,
+              FDRcontrol = 'LOND',
+              verbose = FALSE)
+#png('/Users/madinabekbergenova/Downloads/caPC/network11.png')
+#plot(dag_mrpc,main='')
+#dev.off()
+
+# adjacency matrix of MRPC
+mrpc_matrix<-as(dag_mrpc@graph, "matrix")
+#let's calculate recall for MRPC
+#recall_precision(DAG1,mrpc_matrix,p)
+#write.table(mrpc_matrix, "mrpc_export")
+# Infer the graph by DAGbagM
+vec_node<-1:30
+for (i in 1:30){
+  vec_node[i]="c"
+}
+temp<-dagbagM::hc(Y=X,nodeType=vec_node, whiteList=NULL, blackList=NULL, tol = 1e-6, standardize=TRUE, maxStep = 100000, restart=10, seed = 1,  verbose = FALSE)
+
+boot.adj=temp$adjacency
+for (i in 1:30){
+  for (j in 1:30){
+    if (boot.adj[i,j]==FALSE){
+      boot.adj[i,j]=0
+      
+    }
+    else{
+       boot.adj[i,j]=1
+    }
+  }
+}
+dagbag_g<-graph_from_adjacency_matrix(boot.adj, mode="directed")
+#png('/Users/madinabekbergenova/Downloads/caPC/network12.png')
+#plot(dagbag_g,edge.arrow.size=.4)
+#dev.off()
+write.table(boot.adj,file="dagbag_export")
+dagbag_matrix=boot.adj
+
+
+all_ones_intersection<-function(matrix_list, p){
+  result = matrix(0, p, p)
+    for (i in 1:p){
+      for (j in 1:p){
+        result[i, j] <- all(sapply(matrix_list, function(x) x[i, j] == 1))
+        }
+      }
+    
+  return(result)
+}
+methods_mapped_matrix = all_ones_intersection(list(mrpc_matrix, genie_matrix, dagbag_matrix), 30)
+final_result_mapped_matrix = all_ones_intersection(list(methods_mapped_matrix, DAG1), 30)
+
+print("methods_mapped_matrix count")
+methods_mapped_matrix_count = edge_counter(methods_mapped_matrix, 30)
+
+print("final_result_mapped_matrix count")
+final_result_mapped_matrix_count = edge_counter(final_result_mapped_matrix, 30)
+
+
+ #write.table(mrpc_matrix, file="mrpc_matrix.csv")
+ #write.table(genie_matrix, file="genie_matrix.csv")
+ #write.table(dagbag_matrix, file="dagbag_matrix.csv")
+ #write.table(DAG1, file="DAG1.csv")
+
+
+different_indices <- function(matrix_list, p) {
+
+  
+  # Initialize a list to store different indices
+  different_indices_list <- list()
+  
+  # Check for differences in each position
+  for (i in 1:p) {
+    for (j in 1:p) {
+      values <- sapply(matrix_list, function(x) x[i, j])
+      if (length(unique(values)) > 1) {
+        different_indices_list[[length(different_indices_list) + 1]] <- c(row = i, col = j)
+      }
+    }
+  }
+  
+  return(different_indices_list)
+}
+
+
+  # print(different_indices(list(final_result_mapped_matrix, methods_mapped_matrix), 30))
+  iterationResult[1,iterationCount] = methods_mapped_matrix_count
+  iterationResult[2,iterationCount] = final_result_mapped_matrix_count
+  }
+  return(iterationResult)
+}
+```
+```{r}
+statResultMatrix = repeatInteration(100)
+```
+
+```{r}
+statResultMatrix
+percentage_list <- (statResultMatrix[2, ] / statResultMatrix[1, ]) * 100
+print(percentage_list)
+average=mean(percentage_list)
+average
+```
+```{r}
+print(statResultMatrix)
+x<-statResultMatrix[1,]
+y<-statResultMatrix[2,]
+freq_table <- table(x, y)
+
+# Create a scatter plot with bigger dots for repeated points
+png('/Users/madinabekbergenova/Downloads/caPC/plot1.png')
+plot(x, y, main = "Scatter Plot", xlab = "Shared edges by different networks", ylab = "Number of those edges in true graph", col = "blue", pch = 19, cex = 1 + log10(1 + freq_table))
+dev.off()
+
+
+```
